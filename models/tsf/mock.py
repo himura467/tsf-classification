@@ -2,7 +2,7 @@ from typing import Any
 
 import numpy as np
 
-from models.base import TimeSeriesFoundationModel
+from models.tsf.base import TimeSeriesFoundationModel
 
 
 class MockTimeSeriesModel(TimeSeriesFoundationModel):

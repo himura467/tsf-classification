@@ -1,7 +1,7 @@
 from typing import Any
 
-from models.base import TimeSeriesFoundationModel
-from models.mock import MockTimeSeriesModel
+from models.tsf.base import TimeSeriesFoundationModel
+from models.tsf.mock import MockTimeSeriesModel
 
 
 class ModelFactory:

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from models.base import TimeSeriesFoundationModel
+from models.tsf.base import TimeSeriesFoundationModel
 
 
 class ChurnDataset(Dataset[dict[str, torch.Tensor]]):
