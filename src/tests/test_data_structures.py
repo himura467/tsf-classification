@@ -11,12 +11,14 @@ class TestWeeklyEventData:
     def test_valid_initialization(self):
         """Test valid initialization of WeeklyEventData."""
         data = WeeklyEventData(
+            user_id="user_001",
             timestamp=datetime(2025, 7, 14),
             user_attendance=0.5,
             user_utterances=["Hello", "How are you?"],
             dropped_out=False,
         )
 
+        assert data.user_id == "user_001"
         assert data.timestamp == datetime(2025, 7, 14)
         assert data.user_attendance == 0.5
         assert data.user_utterances == ["Hello", "How are you?"]
@@ -25,7 +27,11 @@ class TestWeeklyEventData:
     def test_empty_utterances(self):
         """Test that empty utterances list is valid."""
         data = WeeklyEventData(
-            timestamp=datetime(2025, 7, 14), user_attendance=0.0, user_utterances=[], dropped_out=True
+            user_id="user_001",
+            timestamp=datetime(2025, 7, 14),
+            user_attendance=0.0,
+            user_utterances=[],
+            dropped_out=True,
         )
         assert data.user_utterances == []
 
@@ -33,7 +39,11 @@ class TestWeeklyEventData:
         """Test handling of multiple utterances."""
         utterances = ["First message", "Second message", "Third message"]
         data = WeeklyEventData(
-            timestamp=datetime(2025, 7, 14), user_attendance=-0.3, user_utterances=utterances, dropped_out=False
+            user_id="user_001",
+            timestamp=datetime(2025, 7, 14),
+            user_attendance=-0.3,
+            user_utterances=utterances,
+            dropped_out=False,
         )
         assert data.user_utterances == utterances
         assert len(data.user_utterances) == 3
@@ -42,6 +52,10 @@ class TestWeeklyEventData:
         """Test both True and False dropout labels."""
         for dropout_status in [True, False]:
             data = WeeklyEventData(
-                timestamp=datetime(2025, 7, 14), user_attendance=0.0, user_utterances=[], dropped_out=dropout_status
+                user_id="user_001",
+                timestamp=datetime(2025, 7, 14),
+                user_attendance=0.0,
+                user_utterances=[],
+                dropped_out=dropout_status,
             )
             assert data.dropped_out is dropout_status

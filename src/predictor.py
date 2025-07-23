@@ -1,5 +1,6 @@
 """Dropout prediction pipeline using time series foundation models."""
 
+from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -18,8 +19,9 @@ class DropoutPredictor:
     1. Feature extraction using a pre-trained time series foundation model
     2. Binary classification using logistic regression on extracted features
 
-    The "last-hidden" strategy compresses the entire time series sequence into a single
-    vector representation suitable for downstream classification.
+    The system groups weekly data by user_id to create user-level time series,
+    then uses a "last-hidden" strategy to compress each user's time series sequence
+    into a single vector representation for dropout prediction.
     """
 
     def __init__(self, foundation_model: TimeSeriesFoundationModel, random_state: int = 42, **classifier_kwargs: Any):
@@ -38,43 +40,91 @@ class DropoutPredictor:
 
         self._is_fitted = False
 
-    def _extract_features(self, weekly_data: list[WeeklyEventData]) -> np.ndarray:
-        """Extract features from weekly event data using foundation model.
-
-        Args:
-            weekly_data: List of weekly event data for users
-
-        Returns:
-            Feature matrix of shape (n_users, hidden_dim)
-        """
-        features = []
-
-        for user_data in weekly_data:
-            # Convert attendance data to time series
-            time_series = np.array([user_data.user_attendance])
-
-            # Extract features using foundation model
-            with torch.no_grad():
-                user_features = self.foundation_model.encode(time_series)
-
-            # Convert to numpy if needed
-            if isinstance(user_features, torch.Tensor):
-                user_features = user_features.cpu().numpy()
-
-            features.append(user_features)
-
-        return np.array(features)
-
-    def _extract_labels(self, weekly_data: list[WeeklyEventData]) -> np.ndarray:
-        """Extract binary labels from weekly event data.
+    def _group_data_by_user(self, weekly_data: list[WeeklyEventData]) -> dict[str, list[WeeklyEventData]]:
+        """Group weekly event data by user_id.
 
         Args:
             weekly_data: List of weekly event data
 
         Returns:
-            Binary labels array of shape (n_users,)
+            Dictionary mapping user_id to list of their weekly data, sorted by timestamp
         """
-        return np.array([int(data.dropped_out) for data in weekly_data])
+        user_data = defaultdict(list)
+        for data in weekly_data:
+            user_data[data.user_id].append(data)
+
+        # Sort each user's data by timestamp
+        for user_id in user_data:
+            user_data[user_id].sort(key=lambda x: x.timestamp)
+
+        return dict(user_data)
+
+    def _extract_user_features(self, user_weekly_data: list[WeeklyEventData]) -> np.ndarray:
+        """Extract features for a single user from their time series data.
+
+        Args:
+            user_weekly_data: List of weekly data for a single user, sorted by timestamp
+
+        Returns:
+            Feature vector of shape (hidden_dim,)
+        """
+        # Create time series from user's attendance data
+        attendance_series = np.array([data.user_attendance for data in user_weekly_data])
+
+        # Extract features using foundation model
+        with torch.no_grad():
+            user_features = self.foundation_model.encode(attendance_series)
+
+        # Convert to numpy if needed
+        if isinstance(user_features, torch.Tensor):
+            user_features = user_features.cpu().numpy()
+
+        return user_features
+
+    def _extract_features(self, weekly_data: list[WeeklyEventData]) -> tuple[np.ndarray, list[str]]:
+        """Extract features from weekly event data using foundation model.
+
+        Args:
+            weekly_data: List of weekly event data for multiple users
+
+        Returns:
+            Tuple of (feature matrix of shape (n_users, hidden_dim), list of user_ids)
+        """
+        # Group data by user
+        user_data = self._group_data_by_user(weekly_data)
+
+        features = []
+        user_ids = []
+
+        for user_id, user_weekly_data in user_data.items():
+            user_features = self._extract_user_features(user_weekly_data)
+            features.append(user_features)
+            user_ids.append(user_id)
+
+        return np.array(features), user_ids
+
+    def _extract_labels(self, weekly_data: list[WeeklyEventData]) -> tuple[np.ndarray, list[str]]:
+        """Extract binary labels from weekly event data at user level.
+
+        Args:
+            weekly_data: List of weekly event data for multiple users
+
+        Returns:
+            Tuple of (binary labels array of shape (n_users,), list of user_ids)
+        """
+        # Group data by user
+        user_data = self._group_data_by_user(weekly_data)
+
+        labels = []
+        user_ids = []
+
+        for user_id, user_weekly_data in user_data.items():
+            # Use the dropout status from the latest week (or any week since it should be consistent)
+            user_label = int(user_weekly_data[-1].dropped_out)
+            labels.append(user_label)
+            user_ids.append(user_id)
+
+        return np.array(labels), user_ids
 
     def fit(self, training_data: list[WeeklyEventData]) -> "DropoutPredictor":
         """Train the dropout predictor on weekly event data.
@@ -88,9 +138,9 @@ class DropoutPredictor:
         if not training_data:
             raise ValueError("Training data cannot be empty")
 
-        # Extract features and labels
-        X = self._extract_features(training_data)
-        y = self._extract_labels(training_data)
+        # Extract features and labels at user level
+        X, _ = self._extract_features(training_data)
+        y, _ = self._extract_labels(training_data)
 
         # Train classifier
         self.classifier.fit(X, y)
@@ -98,14 +148,14 @@ class DropoutPredictor:
 
         return self
 
-    def predict(self, time_series_data: list[WeeklyEventData]) -> np.ndarray:
-        """Predict dropout probabilities for new data.
+    def predict(self, time_series_data: list[WeeklyEventData]) -> dict[str, float]:
+        """Predict dropout probabilities for users.
 
         Args:
             time_series_data: List of weekly event data for prediction
 
         Returns:
-            Dropout probabilities array of shape (n_users,)
+            Dictionary mapping user_id to dropout probability
         """
         if not self._is_fitted:
             raise ValueError("Model must be fitted before prediction")
@@ -114,22 +164,22 @@ class DropoutPredictor:
             raise ValueError("Input data cannot be empty")
 
         # Extract features
-        X = self._extract_features(time_series_data)
+        X, user_ids = self._extract_features(time_series_data)
 
         # Predict probabilities
         proba = self.classifier.predict_proba(X)
 
-        # Return probability of positive class (dropout)
-        return proba[:, 1]
+        # Return probability of positive class (dropout) for each user
+        return {user_id: prob[1] for user_id, prob in zip(user_ids, proba)}
 
-    def predict_binary(self, time_series_data: list[WeeklyEventData]) -> np.ndarray:
-        """Predict binary dropout labels for new data.
+    def predict_binary(self, time_series_data: list[WeeklyEventData]) -> dict[str, bool]:
+        """Predict binary dropout labels for users.
 
         Args:
             time_series_data: List of weekly event data for prediction
 
         Returns:
-            Binary predictions array of shape (n_users,)
+            Dictionary mapping user_id to binary dropout prediction
         """
         if not self._is_fitted:
             raise ValueError("Model must be fitted before prediction")
@@ -138,10 +188,13 @@ class DropoutPredictor:
             raise ValueError("Input data cannot be empty")
 
         # Extract features
-        X = self._extract_features(time_series_data)
+        X, user_ids = self._extract_features(time_series_data)
 
         # Predict binary labels
-        return self.classifier.predict(X)
+        predictions = self.classifier.predict(X)
+
+        # Return binary predictions for each user
+        return {user_id: bool(pred) for user_id, pred in zip(user_ids, predictions)}
 
     def evaluate(self, test_data: list[WeeklyEventData], return_predictions: bool = False) -> dict[str, float]:
         """Evaluate model performance on test data.
@@ -157,11 +210,15 @@ class DropoutPredictor:
             raise ValueError("Model must be fitted before evaluation")
 
         # Get true labels
-        y_true = self._extract_labels(test_data)
+        y_true, true_user_ids = self._extract_labels(test_data)
 
         # Get predictions
-        y_proba = self.predict(test_data)
-        y_pred = self.predict_binary(test_data)
+        user_probabilities = self.predict(test_data)
+        user_binary_predictions = self.predict_binary(test_data)
+
+        # Align predictions with true labels (in case of different ordering)
+        y_proba = np.array([user_probabilities[user_id] for user_id in true_user_ids])
+        y_pred = np.array([int(user_binary_predictions[user_id]) for user_id in true_user_ids])
 
         # Calculate metrics
         metrics = {
@@ -174,9 +231,12 @@ class DropoutPredictor:
 
         if return_predictions:
             metrics["predictions"] = {
+                "user_ids": true_user_ids,
                 "y_true": y_true,
                 "y_pred": y_pred,
                 "y_proba": y_proba,
+                "user_probabilities": user_probabilities,
+                "user_binary_predictions": user_binary_predictions,
             }
 
         return metrics
